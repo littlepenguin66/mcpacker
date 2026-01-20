@@ -2,7 +2,7 @@ use crate::models::{LoaderType, ServerContext};
 use crate::ui::{print_success, print_warn, style};
 use anyhow::{Context, Result};
 use futures::StreamExt;
-use indicatif::{ProgressBar, ProgressState, ProgressStyle};
+use indicatif::{ProgressBar, ProgressStyle};
 use reqwest::Client;
 use std::path::PathBuf;
 use tokio::fs::File;
@@ -39,23 +39,12 @@ async fn download_file_with_progress(
 
     let total_size = response.content_length().unwrap_or(0);
 
-    // Print label first to ensure progress bar is on next line if desired,
-    // or just let progress bar handle it.
-    // User requested progress bar on next line.
     println!("Downloading: {}", label);
 
     let pb = ProgressBar::new(total_size);
-    pb.set_style(
-        ProgressStyle::with_template(
-            "{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({eta})",
-        )?
-        .with_key("eta", |state: &ProgressState, w: &mut dyn std::fmt::Write| {
-            write!(w, "{:.1}s", state.eta().as_secs_f64()).unwrap()
-        })
-        .progress_chars("#>-"),
-    );
-
-    // pb.set_message(format!("Downloading {}", label));
+    pb.set_style(ProgressStyle::with_template(
+        "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec}, {eta})",
+    )?.progress_chars("##-"));
 
     let mut stream = response.bytes_stream();
     let mut file = File::create(output_path).await?;
@@ -75,8 +64,6 @@ async fn install_fabric_like(
     context: &ServerContext,
     output_dir: &PathBuf,
 ) -> Result<String> {
-    // print_info("Downloading", "Server Jar");
-
     let base_url = if context.loader_type == LoaderType::Quilt {
         format!(
             "https://meta.quiltmc.org/v3/versions/loader/{}/{}/server/jar",
@@ -152,11 +139,23 @@ async fn install_forge_like(
     );
 
     println!("   Action: Running installer automatically...");
+
+    let log_path = output_dir.join("installer.log");
+    let log_file = std::fs::File::create(&log_path).context("Failed to create installer.log")?;
+    let stdout = std::process::Stdio::from(
+        log_file
+            .try_clone()
+            .context("Failed to clone log file handle")?,
+    );
+    let stderr = std::process::Stdio::from(log_file);
+
     let status = tokio::process::Command::new("java")
         .arg("-jar")
         .arg(installer_name)
         .arg("--installServer")
         .current_dir(output_dir)
+        .stdout(stdout)
+        .stderr(stderr)
         .status()
         .await;
 
@@ -166,7 +165,12 @@ async fn install_forge_like(
         }
         _ => {
             print_warn("Automatic installation failed or Java not found.");
+            println!(
+                "      Log: {}",
+                style(log_path.display().to_string()).yellow()
+            );
             println!("      Please run {} manually.", style(script_name).bold());
+            anyhow::bail!("Installer failed to run successfully");
         }
     }
 
