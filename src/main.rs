@@ -24,34 +24,52 @@ use ui::{LOOKING_GLASS, SPARKLE, print_header, print_info, print_step, print_suc
 #[derive(Parser, Debug)]
 #[command(author, version, about = LOGO, long_about = None)]
 struct Args {
+    /// Path to modpack (.mrpack for Modrinth or .zip for CurseForge)
     #[arg(
         index = 1,
         required_unless_present = "update_list",
         value_parser = verify_input_file
     )]
     input: Option<PathBuf>,
+    /// Output directory for the generated server pack
     #[arg(short, long)]
     output: Option<PathBuf>,
-    #[arg(short, long, default_value = "4G", value_parser = verify_memory_format)]
+    /// Server memory setting (e.g. 4G or 4096M)
+    #[arg(
+        short,
+        long,
+        default_value = "4G",
+        value_parser = verify_memory_format
+    )]
     memory: String,
+    /// Path to java executable used for the server
     #[arg(long, default_value = "java")]
     java_path: String,
+    /// Maximum concurrent mod downloads
     #[arg(short, long, default_value = "10")]
     parallel: usize,
+    /// Refresh cached client-only keyword list and exit if no input
     #[arg(long, short = 'u')]
     update_list: bool,
+    /// Keep client-only mods when parsing Modrinth packs
     #[arg(long)]
     keep_client: bool,
+    /// Filter out client-only mods when parsing CurseForge packs
     #[arg(long)]
     filter_client: bool,
+    /// Auto-accept Mojang EULA in generated server files
     #[arg(long)]
     accept_eula: bool,
+    /// Skip hash verification for downloaded mods
     #[arg(long)]
     skip_hash: bool,
+    /// Skip installer hash verification (not recommended)
     #[arg(long)]
     skip_installer_verify: bool,
+    /// Expected installer SHA (supports sha1/sha512)
     #[arg(long)]
     installer_hash: Option<String>,
+    /// HTTP proxy URL for downloads and cache refresh
     #[arg(long)]
     proxy: Option<String>,
 }
