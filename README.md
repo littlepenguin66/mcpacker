@@ -55,6 +55,14 @@ cd mcpacker
 cargo install --path .
 ```
 
+### From Crates.io
+
+Install directly from Crates.io:
+
+```bash
+cargo install mcpacker
+```
+
 ### Pre-built Binaries
 
 Download the latest release from the [releases page](https://github.com/littlepenguin66/mcpacker/releases) for your platform.
