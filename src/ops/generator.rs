@@ -1,18 +1,21 @@
 use crate::models::{LoaderType, ServerContext};
 use anyhow::{Context, Result};
-use std::path::PathBuf;
+use std::path::Path;
 use tokio::fs::{File, OpenOptions};
 use tokio::io::AsyncWriteExt;
 use zip::ZipArchive;
 
 use crate::ui::print_step;
 
+/// Generate server files
 pub async fn generate_server_files(
     context: &ServerContext,
-    pack_path: &PathBuf,
-    output_dir: &PathBuf,
+    pack_path: &Path,
+    output_dir: &Path,
     memory: &str,
     server_jar: &str,
+    java_path: &str,
+    accept_eula: bool,
 ) -> Result<String> {
     print_step("Extracting overrides");
     extract_overrides(pack_path, output_dir).await?;
@@ -20,17 +23,23 @@ pub async fn generate_server_files(
     print_step("Generating eula.txt");
     let eula_path = output_dir.join("eula.txt");
     let mut eula_file = File::create(eula_path).await?;
-    eula_file.write_all(b"eula=false\n").await?;
+    if accept_eula {
+        eula_file.write_all(b"eula=true\n").await?;
+    } else {
+        eula_file.write_all(b"eula=false\n").await?;
+    }
 
     print_step("Generating start scripts");
-    let script_name = generate_start_scripts(context, output_dir, memory, server_jar).await?;
+    let script_name =
+        generate_start_scripts(context, output_dir, memory, server_jar, java_path).await?;
 
     Ok(script_name)
 }
 
-async fn extract_overrides(pack_path: &PathBuf, output_dir: &PathBuf) -> Result<()> {
-    let pack_path = pack_path.clone();
-    let output_dir = output_dir.clone();
+/// Extract overrides from pack
+async fn extract_overrides(pack_path: &Path, output_dir: &Path) -> Result<()> {
+    let pack_path = pack_path.to_path_buf();
+    let output_dir = output_dir.to_path_buf();
 
     tokio::task::spawn_blocking(move || {
         let file = std::fs::File::open(&pack_path)
@@ -43,6 +52,15 @@ async fn extract_overrides(pack_path: &PathBuf, output_dir: &PathBuf) -> Result<
 
             if name.starts_with("overrides/") && !name.ends_with('/') {
                 let relative_path = name.trim_start_matches("overrides/");
+
+                let path = std::path::Path::new(relative_path);
+                if path
+                    .components()
+                    .any(|c| !matches!(c, std::path::Component::Normal(_)))
+                {
+                    anyhow::bail!("Malicious path detected in modpack: {}", name);
+                }
+
                 let dest_path = output_dir.join(relative_path);
 
                 if let Some(parent) = dest_path.parent() {
@@ -60,26 +78,26 @@ async fn extract_overrides(pack_path: &PathBuf, output_dir: &PathBuf) -> Result<
     Ok(())
 }
 
+/// Generate start scripts
 async fn generate_start_scripts(
     context: &ServerContext,
-    output_dir: &PathBuf,
+    output_dir: &Path,
     memory: &str,
     server_jar: &str,
+    java_path: &str,
 ) -> Result<String> {
     let run_sh_path = output_dir.join("run.sh");
-    // If run.sh exists (from NeoForge/Forge installer), use it directly instead of creating wrappers
     if run_sh_path.exists() {
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
-            if let Ok(metadata) = tokio::fs::metadata(&run_sh_path).await {
-                let mut perms = metadata.permissions();
-                perms.set_mode(0o755);
-                let _ = tokio::fs::set_permissions(&run_sh_path, perms).await;
-            }
+            let rp = run_sh_path.clone();
+            let _ = tokio::task::spawn_blocking(move || {
+                let _ = crate::ops::utils::make_executable(&rp);
+            })
+            .await
+            .ok();
         }
 
-        // Apply memory settings to user_jvm_args.txt if needed
         match context.loader_type {
             LoaderType::Forge | LoaderType::NeoForge => {
                 let args_path = output_dir.join("user_jvm_args.txt");
@@ -109,17 +127,14 @@ async fn generate_start_scripts(
         }
     }
 
-    // Standard start script generation for Fabric/Quilt or older Forge
     let bat_content = match context.loader_type {
         LoaderType::Forge | LoaderType::NeoForge => {
-            format!(
-                "@echo off\ncd /d \"%~dp0\"\nREM Forge/NeoForge uses user_jvm_args.txt for JVM arguments.\nREM Run the installer-generated script to start.\ncall run.bat\npause\n"
-            )
+            "@echo off\ncd /d \"%~dp0\"\nREM Forge/NeoForge uses user_jvm_args.txt for JVM arguments.\nREM Run the installer-generated script to start.\ncall run.bat\npause\n".to_string()
         }
         _ => {
             format!(
-                "@echo off\ncd /d \"%~dp0\"\njava -Xmx{} -jar {} nogui\npause\n",
-                memory, server_jar
+                "@echo off\ncd /d \"%~dp0\"\n{} -Xmx{} -jar {} nogui\npause\n",
+                java_path, memory, server_jar
             )
         }
     };
@@ -130,14 +145,12 @@ async fn generate_start_scripts(
 
     let sh_content = match context.loader_type {
         LoaderType::Forge | LoaderType::NeoForge => {
-            format!(
-                "#!/bin/sh\ncd \"$(dirname \"$0\")\"\n# Forge/NeoForge uses user_jvm_args.txt for JVM arguments.\n# Run the installer-generated script to start.\n./run.sh\n"
-            )
+            "#!/bin/sh\ncd \"$(dirname \"$0\")\"\n# Forge/NeoForge uses user_jvm_args.txt for JVM arguments.\n# Run the installer-generated script to start.\n./run.sh\n".to_string()
         }
         _ => {
             format!(
-                "#!/bin/sh\ncd \"$(dirname \"$0\")\"\njava -Xmx{} -jar {} nogui\n",
-                memory, server_jar
+                "#!/bin/sh\ncd \"$(dirname \"$0\")\"\n{} -Xmx{} -jar {} nogui\n",
+                java_path, memory, server_jar
             )
         }
     };
@@ -146,13 +159,12 @@ async fn generate_start_scripts(
     let mut sh_file = File::create(&sh_path).await?;
     sh_file.write_all(sh_content.as_bytes()).await?;
 
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = sh_file.metadata().await?.permissions();
-        perms.set_mode(0o755);
-        sh_file.set_permissions(perms).await?;
-    }
+    let sp = sh_path.clone();
+    let _ = tokio::task::spawn_blocking(move || {
+        let _ = crate::ops::utils::make_executable(&sp);
+    })
+    .await
+    .ok();
 
     match context.loader_type {
         LoaderType::Forge | LoaderType::NeoForge => {

@@ -1,5 +1,5 @@
 use crate::models::{LoaderType, ModInfo, ServerContext, SideType};
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use std::fs::File;
 use std::io::Read;
@@ -18,8 +18,6 @@ struct MrPackFile {
     hashes: MrPackHashes,
     env: Option<MrPackEnv>,
     downloads: Vec<String>,
-    // name is not strictly in the file object usually, it's just a path.
-    // We can infer name from path or leave it as filename.
 }
 
 #[derive(Debug, Deserialize)]
@@ -34,11 +32,10 @@ struct MrPackEnv {
     server: Option<String>,
 }
 
-pub fn parse_mrpack(path: &PathBuf) -> Result<(ServerContext, Vec<ModInfo>)> {
+pub fn parse_mrpack(path: &PathBuf, keep_client: bool) -> Result<(ServerContext, Vec<ModInfo>)> {
     let file = File::open(path).with_context(|| format!("Failed to open file: {:?}", path))?;
     let mut archive = ZipArchive::new(file).with_context(|| "Failed to open zip archive")?;
 
-    // 1. Read modrinth.index.json
     let mut index_file = archive
         .by_name("modrinth.index.json")
         .with_context(|| "modrinth.index.json not found in archive")?;
@@ -49,7 +46,6 @@ pub fn parse_mrpack(path: &PathBuf) -> Result<(ServerContext, Vec<ModInfo>)> {
     let index: MrPackIndex = serde_json::from_str(&json_content)
         .with_context(|| "Failed to parse modrinth.index.json")?;
 
-    // 2. Parse Loader and MC Version
     let mc_version = index
         .dependencies
         .get("minecraft")
@@ -77,14 +73,9 @@ pub fn parse_mrpack(path: &PathBuf) -> Result<(ServerContext, Vec<ModInfo>)> {
         loader_version,
     };
 
-    // 3. Extract Mods
     let mut mods = Vec::new();
 
     for file in index.files {
-        // Determine Side
-        // env.server: "required" | "optional" | "unsupported"
-        // env.client: "required" | "optional" | "unsupported"
-
         let client_env = file
             .env
             .as_ref()
@@ -97,52 +88,45 @@ pub fn parse_mrpack(path: &PathBuf) -> Result<(ServerContext, Vec<ModInfo>)> {
             .unwrap_or("required");
 
         let side = match (client_env, server_env) {
-            (_, "unsupported") => SideType::Client, // Server doesn't support it -> Client only
-            ("unsupported", _) => SideType::Server, // Client doesn't support it -> Server only
+            (_, "unsupported") => SideType::Client,
+            ("unsupported", _) => SideType::Server,
             _ => SideType::Both,
         };
 
-        // Filter: We only care about things that go on the server
-        if side == SideType::Client {
+        if side == SideType::Client && !keep_client {
             continue;
         }
 
         let is_required = server_env == "required";
 
-        // Get Name/Filename
         let file_path_in_pack = PathBuf::from(&file.path);
         let file_name = file_path_in_pack
             .file_name()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|| "unknown.jar".to_string());
 
-        // Name usually isn't in the file object, use filename or path stem
         let name = file_path_in_pack
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|| file_name.clone());
 
-        // Get Hash (prefer sha512, fallback to sha1)
         let (hash, hash_algo) = if let Some(h) = file.hashes.sha512 {
             (h, "sha512".to_string())
         } else if let Some(h) = file.hashes.sha1 {
             (h, "sha1".to_string())
         } else {
-            // If no hash, we might skip or error. Let's warn but keep if url exists.
             ("".to_string(), "none".to_string())
         };
 
-        // Get URL
-        let download_url = file.downloads.first().cloned().unwrap_or_default();
-        if download_url.is_empty() {
-            // Cannot download without URL
+        let download_urls = file.downloads.clone();
+        if download_urls.is_empty() {
             continue;
         }
 
         mods.push(ModInfo {
             name,
             file_name,
-            download_url,
+            download_urls,
             hash,
             hash_algo,
             side,

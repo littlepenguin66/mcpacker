@@ -1,5 +1,6 @@
 use crate::models::{LoaderType, ModInfo, ServerContext, SideType};
-use anyhow::{bail, Context, Result};
+use crate::parsers::filter;
+use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use std::fs::File;
 use std::io::Read;
@@ -36,7 +37,11 @@ struct ManifestFile {
     required: bool,
 }
 
-pub fn parse_curseforge(path: &PathBuf) -> Result<(ServerContext, Vec<ModInfo>)> {
+/// Parse CurseForge modpack
+pub fn parse_curseforge(
+    path: &PathBuf,
+    filter_client: bool,
+) -> Result<(ServerContext, Vec<ModInfo>)> {
     let file = File::open(path).with_context(|| format!("Failed to open file: {:?}", path))?;
     let mut archive = ZipArchive::new(file).with_context(|| "Failed to open zip archive")?;
 
@@ -93,47 +98,28 @@ pub fn parse_curseforge(path: &PathBuf) -> Result<(ServerContext, Vec<ModInfo>)>
         loader_version,
     };
 
-    let client_only_keywords = vec![
-        "sodium",
-        "optifine",
-        "rubidium",
-        "iris",
-        "oculus",
-        "mouse-tweaks",
-        "controlling",
-        "toast",
-        "catalogue",
-        "jade",
-        "wthit",
-        "rei",
-        "jei",
-        "emi",
-    ];
-
     let mut mods = Vec::new();
 
-    println!("Warning: CurseForge API resolution is stubbed. Mods will have placeholder URLs.");
-
     for file in manifest.files {
-        let (name, file_name, download_url) = resolve_cf_file(file.project_id, file.file_id);
+        let (name, temp_file_name, download_urls) =
+            resolve_cf_file_multi_mirror(file.project_id, file.file_id);
 
-        let name_lower = name.to_lowercase();
-        let is_client_only = client_only_keywords.iter().any(|k| name_lower.contains(k));
+        let display_name = name.clone();
 
-        let side = if is_client_only {
-            SideType::Client
-        } else {
-            SideType::Both
-        };
+        let mut side = SideType::Both;
+
+        if filter_client && filter::is_client_only_mod(&name) {
+            side = SideType::Client;
+        }
 
         if side == SideType::Client {
             continue;
         }
 
         mods.push(ModInfo {
-            name,
-            file_name,
-            download_url,
+            name: display_name,
+            file_name: temp_file_name,
+            download_urls,
             hash: "".to_string(),
             hash_algo: "none".to_string(),
             side,
@@ -144,10 +130,17 @@ pub fn parse_curseforge(path: &PathBuf) -> Result<(ServerContext, Vec<ModInfo>)>
     Ok((server_context, mods))
 }
 
-fn resolve_cf_file(project_id: u32, file_id: u32) -> (String, String, String) {
-    let name = format!("CF-Project-{}", project_id);
-    let file_name = format!("{}-{}.jar", project_id, file_id);
-    let url = format!("https://example.com/download/{}/{}", project_id, file_id);
+/// Resolve CurseForge file URLs
+fn resolve_cf_file_multi_mirror(project_id: u32, file_id: u32) -> (String, String, Vec<String>) {
+    let name = format!("CF-{}", project_id);
+    let temp_file_name = format!("{}.jar", file_id);
 
-    (name, file_name, url)
+    let api_url = format!(
+        "https://www.curseforge.com/api/v1/mods/{}/files/{}/download",
+        project_id, file_id
+    );
+
+    let urls = vec![api_url];
+
+    (name, temp_file_name, urls)
 }
