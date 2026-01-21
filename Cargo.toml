@@ -2,6 +2,16 @@
 name = "mcpacker"
 version = "0.1.0"
 edition = "2024"
+authors = ["Jerry Zheng <littlepenguinzq@gmail.com>"]
+description = "A command-line tool to convert client modpacks into ready-to-run Minecraft servers"
+repository = "https://github.com/littlepenguin66/mcpacker"
+license = "AGPL-3.0-or-later"
+keywords = ["cli", "minecraft", "modpack", "server", "rust"]
+readme = "README.md"
+
+[[bin]]
+name = "mcpacker"
+path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0.100"
