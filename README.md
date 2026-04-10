@@ -35,7 +35,7 @@ Whether you're setting up a server for friends or managing multiple modded insta
 - **Multiple Format Support**: Parse both Modrinth (`.mrpack`) and CurseForge (`.zip`) modpack formats
 - **Smart Mod Filtering**: Automatically excludes client-only mods using a cached keyword database
 - **Parallel Downloads**: Fast concurrent downloads with configurable parallelism and progress tracking
-- **Hash Verification**: Built-in SHA-1 and SHA-512 verification ensures file integrity
+- **Hash Verification**: Built-in SHA-1 and SHA-512 mod verification plus installer hash verification ensures file integrity
 - **Loader Installation**: Automatic detection and installation of Fabric, Forge, Quilt, and NeoForge loaders
 - **Proxy Support**: Full HTTP/HTTPS proxy support for downloads and API requests
 - **Start Script Generation**: Creates platform-specific startup scripts with custom memory and Java settings
@@ -98,7 +98,7 @@ Options:
   --accept-eula                 Automatically accept Minecraft EULA
   --skip-hash                   Skip mod hash verification
   --skip-installer-verify       Skip loader installer hash verification
-  --installer-hash <HASH>       Expected hash for loader installer
+  --installer-hash <HASH>       Expected SHA-1, SHA-256, or SHA-512 hash for loader installer
   --proxy <URL>                 HTTP/HTTPS proxy URL
   -h, --help                    Print help
   -v, --version                 Print version

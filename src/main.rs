@@ -24,17 +24,14 @@ use ui::{LOOKING_GLASS, SPARKLE, print_header, print_info, print_step, print_suc
 #[derive(Parser, Debug)]
 #[command(author, version, about = LOGO, long_about = None)]
 struct Args {
-    /// Path to modpack (.mrpack for Modrinth or .zip for CurseForge)
     #[arg(
         index = 1,
         required_unless_present = "update_list",
         value_parser = verify_input_file
     )]
     input: Option<PathBuf>,
-    /// Output directory for the generated server pack
     #[arg(short, long)]
     output: Option<PathBuf>,
-    /// Server memory setting (e.g. 4G or 4096M)
     #[arg(
         short,
         long,
@@ -42,39 +39,28 @@ struct Args {
         value_parser = verify_memory_format
     )]
     memory: String,
-    /// Path to java executable used for the server
     #[arg(long, default_value = "java")]
     java_path: String,
-    /// Maximum concurrent mod downloads
-    #[arg(short, long, default_value = "10")]
+    #[arg(short, long, default_value = "10", value_parser = verify_parallel_count)]
     parallel: usize,
-    /// Refresh cached client-only keyword list and exit if no input
     #[arg(long, short = 'u')]
     update_list: bool,
-    /// Keep client-only mods when parsing Modrinth packs
     #[arg(long)]
     keep_client: bool,
-    /// Filter out client-only mods when parsing CurseForge packs
     #[arg(long)]
     filter_client: bool,
-    /// Auto-accept Mojang EULA in generated server files
     #[arg(long)]
     accept_eula: bool,
-    /// Skip hash verification for downloaded mods
     #[arg(long)]
     skip_hash: bool,
-    /// Skip installer hash verification (not recommended)
     #[arg(long)]
     skip_installer_verify: bool,
-    /// Expected installer SHA (supports sha1/sha512)
     #[arg(long)]
     installer_hash: Option<String>,
-    /// HTTP proxy URL for downloads and cache refresh
     #[arg(long)]
     proxy: Option<String>,
 }
 
-/// Verify input file exists and has valid extension
 fn verify_input_file(s: &str) -> Result<PathBuf, String> {
     let path = PathBuf::from(s);
     if !path.exists() {
@@ -93,12 +79,19 @@ fn verify_input_file(s: &str) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-/// Verify memory format is valid
 fn verify_memory_format(s: &str) -> Result<String, String> {
-    let valid_end = s.ends_with('M') || s.ends_with('G') || s.ends_with('m') || s.ends_with('g');
-    let valid_start = s.chars().next().is_some_and(|c| c.is_ascii_digit());
+    let Some((index, _)) = s.char_indices().last() else {
+        return Err(format!(
+            "Invalid memory format: '{}'. Please use formats like '4G' or '4096M'",
+            s
+        ));
+    };
+    let (number, unit) = s.split_at(index);
 
-    if valid_start && valid_end {
+    let valid_unit = matches!(unit, "M" | "G" | "m" | "g");
+    let valid_number = !number.is_empty() && number.chars().all(|c| c.is_ascii_digit());
+
+    if valid_number && valid_unit {
         Ok(s.to_string())
     } else {
         Err(format!(
@@ -108,15 +101,36 @@ fn verify_memory_format(s: &str) -> Result<String, String> {
     }
 }
 
+fn verify_parallel_count(s: &str) -> Result<usize, String> {
+    let parallel = s.parse::<usize>().map_err(|_| {
+        format!(
+            "Invalid parallel value: '{}'. Please use a positive integer",
+            s
+        )
+    })?;
+
+    if parallel == 0 {
+        Err("Parallel downloads must be at least 1".to_string())
+    } else {
+        Ok(parallel)
+    }
+}
+
 #[tokio::main]
-/// Main entry point
 async fn main() -> Result<()> {
     let args = Args::parse();
 
     ui::print_logo();
 
+    let input_extension = args
+        .input
+        .as_ref()
+        .and_then(|path| path.extension())
+        .and_then(|ext| ext.to_str());
+    let needs_filter_cache =
+        args.update_list || (args.filter_client && input_extension == Some("zip"));
     let cache_exists = parsers::filter::is_cache_present();
-    if args.update_list || !cache_exists {
+    if needs_filter_cache && (args.update_list || !cache_exists) {
         if !cache_exists {
             print_step("No mods list cache found. Performing initial update...");
         } else {
@@ -165,7 +179,12 @@ async fn main() -> Result<()> {
         }
         "zip" => {
             print_step("Parsing CurseForge Modpack");
-            let (ctx, mods) = parsers::curseforge::parse_curseforge(&input, args.filter_client)?;
+            let (ctx, mods) = parsers::curseforge::parse_curseforge(
+                &input,
+                args.filter_client,
+                args.proxy.as_deref(),
+            )
+            .await?;
             (ctx, mods)
         }
         ext => {
@@ -224,4 +243,34 @@ async fn main() -> Result<()> {
     );
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Args, verify_memory_format, verify_parallel_count};
+    use clap::Parser;
+
+    #[test]
+    fn accepts_numeric_memory_values_with_supported_units() {
+        assert_eq!(verify_memory_format("4G"), Ok("4G".to_string()));
+        assert_eq!(verify_memory_format("4096m"), Ok("4096m".to_string()));
+    }
+
+    #[test]
+    fn rejects_memory_values_with_non_numeric_prefixes() {
+        assert!(verify_memory_format("4fooG").is_err());
+        assert!(verify_memory_format("abcG").is_err());
+        assert!(verify_memory_format("4").is_err());
+    }
+
+    #[test]
+    fn rejects_zero_parallel_downloads() {
+        assert!(Args::try_parse_from(["mcpacker", "--update-list", "--parallel", "0"]).is_err());
+    }
+
+    #[test]
+    fn accepts_positive_parallel_downloads() {
+        assert_eq!(verify_parallel_count("1"), Ok(1));
+        assert_eq!(verify_parallel_count("12"), Ok(12));
+    }
 }

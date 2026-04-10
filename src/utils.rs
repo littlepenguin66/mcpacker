@@ -1,4 +1,3 @@
-// Sanitize filename
 pub fn sanitize_filename(name: &str) -> String {
     let cleaned: String = name
         .chars()

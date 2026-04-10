@@ -5,7 +5,6 @@ use std::path::PathBuf;
 
 const FALLBACK_URL: &str = "https://raw.githubusercontent.com/Griefed/ServerPackCreator/main/serverpackcreator-api/src/main/resources/serverpackcreator.properties";
 
-/// Get cache path
 fn get_cache_path() -> Result<PathBuf> {
     let project_dirs = directories::ProjectDirs::from("com", "mcpacker", "mcpacker")
         .context("Failed to determine cache directory")?;
@@ -16,12 +15,10 @@ fn get_cache_path() -> Result<PathBuf> {
     Ok(cache_dir.join("fallback_mods.txt"))
 }
 
-/// Check if cache is present
 pub fn is_cache_present() -> bool {
     get_cache_path().map(|p| p.exists()).unwrap_or(false)
 }
 
-/// Update fallback list
 pub async fn update_fallback_list(proxy: Option<&str>) -> Result<()> {
     let mut client_builder = reqwest::Client::builder();
 
@@ -32,8 +29,14 @@ pub async fn update_fallback_list(proxy: Option<&str>) -> Result<()> {
     }
 
     let client = client_builder.build()?;
-    let response = client.get(FALLBACK_URL).send().await?.text().await?;
-    let keywords = parse_keywords_from_properties(&response);
+    let response = client
+        .get(FALLBACK_URL)
+        .send()
+        .await?
+        .error_for_status()?
+        .text()
+        .await?;
+    let keywords = validated_keywords(parse_keywords_from_properties(&response))?;
     let cache_path = get_cache_path()?;
     let mut file = File::create(cache_path)?;
 
@@ -46,7 +49,6 @@ pub async fn update_fallback_list(proxy: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-/// Parse keywords from properties
 fn parse_keywords_from_properties(content: &str) -> Vec<String> {
     let mut keywords = Vec::new();
     let mut in_list = false;
@@ -86,8 +88,7 @@ fn parse_keywords_from_properties(content: &str) -> Vec<String> {
     keywords
 }
 
-/// Load keywords
-fn load_keywords() -> Vec<String> {
+pub(crate) fn client_only_keywords() -> Vec<String> {
     if let Ok(path) = get_cache_path()
         && path.exists()
         && let Ok(content) = std::fs::read_to_string(path)
@@ -102,12 +103,55 @@ fn load_keywords() -> Vec<String> {
     Vec::new()
 }
 
-/// Check if mod is client-only
-pub fn is_client_only_mod(name: &str) -> bool {
-    let keywords = load_keywords();
-    if keywords.is_empty() {
-        return false;
-    }
+pub(crate) fn is_client_only_name(name: &str, keywords: &[String]) -> bool {
     let name_lower = name.to_lowercase();
-    keywords.iter().any(|k| name_lower.contains(k))
+    keywords.iter().any(|keyword| name_lower.contains(keyword))
+}
+
+fn validated_keywords(keywords: Vec<String>) -> Result<Vec<String>> {
+    if keywords.is_empty() {
+        anyhow::bail!("Failed to parse any client-only mod keywords from fallback list")
+    }
+
+    Ok(keywords)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_client_only_name, parse_keywords_from_properties, validated_keywords};
+
+    #[test]
+    fn parses_multiline_keyword_properties() {
+        let content = "\
+de.griefed.serverpackcreator.configuration.fallbackmodslist=sodium,\\
+iris,\\
+entityculling
+";
+
+        assert_eq!(
+            parse_keywords_from_properties(content),
+            vec![
+                "sodium".to_string(),
+                "iris".to_string(),
+                "entityculling".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn matches_keywords_case_insensitively() {
+        let keywords = vec!["sodium".to_string(), "iris".to_string()];
+
+        assert!(is_client_only_name(
+            "Sodium-Fabric-0.5.0+mc1.20.1.jar",
+            &keywords
+        ));
+        assert!(!is_client_only_name("lithium-fabric-0.12.0.jar", &keywords));
+    }
+
+    #[test]
+    fn rejects_empty_keyword_sets() {
+        assert!(validated_keywords(Vec::new()).is_err());
+        assert!(validated_keywords(vec!["sodium".to_string()]).is_ok());
+    }
 }

@@ -1,7 +1,6 @@
 use std::path::Path;
 
 #[cfg(unix)]
-/// Make file executable
 pub fn make_executable(path: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
     let metadata = std::fs::metadata(path)?;
@@ -11,7 +10,6 @@ pub fn make_executable(path: &Path) -> std::io::Result<()> {
 }
 
 #[cfg(not(unix))]
-/// Make file executable
 pub fn make_executable(_path: &Path) -> std::io::Result<()> {
     Ok(())
 }

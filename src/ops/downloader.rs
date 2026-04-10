@@ -34,7 +34,12 @@ struct CfFileData {
 
 const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
-/// Download all mods
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HashAlgorithm {
+    Sha1,
+    Sha512,
+}
+
 pub async fn download_all(
     mods: Vec<ModInfo>,
     output_dir: PathBuf,
@@ -133,7 +138,6 @@ pub async fn download_all(
     Ok(())
 }
 
-/// Download single mod
 async fn download_single_mod(
     client: &Client,
     mod_info: &ModInfo,
@@ -144,7 +148,11 @@ async fn download_single_mod(
 ) -> Result<()> {
     main_pb.set_message(format!("Downloading: {}", mod_info.name));
 
-    let mut target_filename = format!("{}.jar", mod_info.name);
+    let mut target_filename = if mod_info.file_name.is_empty() {
+        format!("{}.jar", mod_info.name)
+    } else {
+        sanitize_filename(&mod_info.file_name)
+    };
     let mut resolved_real_name = false;
     let mut download_urls = mod_info.download_urls.clone();
 
@@ -183,11 +191,17 @@ async fn download_single_mod(
     }
 
     let temp_file_path = mods_dir.join(format!("{}.part", target_filename));
+    let expected_hash = if skip_hash || mod_info.hash.is_empty() {
+        None
+    } else {
+        parse_hash_algorithm(&mod_info.hash_algo)?
+            .map(|algorithm| (algorithm, mod_info.hash.as_str()))
+    };
 
     let current_file_path = mods_dir.join(&target_filename);
     if current_file_path.exists()
         && (skip_hash
-            || verify_hash(&current_file_path, &mod_info.hash, &mod_info.hash_algo)
+            || verify_hash(&current_file_path, expected_hash)
                 .await
                 .unwrap_or(false))
     {
@@ -216,11 +230,7 @@ async fn download_single_mod(
             &temp_file_path,
             main_pb,
             byte_pb,
-            if skip_hash || mod_info.hash.is_empty() || mod_info.hash_algo == "none" {
-                None
-            } else {
-                Some((mod_info.hash_algo.as_str(), mod_info.hash.as_str()))
-            },
+            expected_hash,
         )
         .await
         {
@@ -271,7 +281,6 @@ async fn download_single_mod(
     Err(last_error.unwrap_or_else(|| anyhow::anyhow!("All nodes failed to download")))
 }
 
-/// Try to download from URL
 async fn try_download_from_url(
     client: &Client,
     url: &str,
@@ -279,7 +288,7 @@ async fn try_download_from_url(
     file_path: &Path,
     main_pb: &ProgressBar,
     byte_pb: &ProgressBar,
-    expected_hash: Option<(&str, &str)>,
+    expected_hash: Option<(HashAlgorithm, &str)>,
 ) -> Result<(String, bool)> {
     let response = client.get(url).header("Accept", "*/*").send().await?;
 
@@ -310,23 +319,15 @@ async fn try_download_from_url(
 
     let mut sha1_hasher = Sha1::new();
     let mut sha512_hasher = Sha512::new();
-    let mut do_hash = false;
-    let mut expect_algo = "";
-    let mut expect_val = "";
-    if let Some((algo, expected)) = expected_hash {
-        do_hash = true;
-        expect_algo = algo;
-        expect_val = expected;
-    }
+    let do_hash = expected_hash.is_some();
 
     while let Some(item) = stream.next().await {
         let chunk = item?;
         writer.write_all(&chunk).await?;
-        if do_hash {
-            if expect_algo == "sha1" {
-                sha1_hasher.update(&chunk);
-            } else if expect_algo == "sha512" {
-                sha512_hasher.update(&chunk);
+        if let Some((algorithm, _)) = expected_hash {
+            match algorithm {
+                HashAlgorithm::Sha1 => sha1_hasher.update(&chunk),
+                HashAlgorithm::Sha512 => sha512_hasher.update(&chunk),
             }
         }
         byte_pb.inc(chunk.len() as u64);
@@ -334,12 +335,12 @@ async fn try_download_from_url(
     writer.flush().await?;
 
     let hash_ok = if do_hash {
-        let computed = if expect_algo == "sha1" {
-            hex::encode(sha1_hasher.finalize())
-        } else {
-            hex::encode(sha512_hasher.finalize())
+        let (algorithm, expected) = expected_hash.expect("hash is present when hashing is enabled");
+        let computed = match algorithm {
+            HashAlgorithm::Sha1 => hex::encode(sha1_hasher.finalize()),
+            HashAlgorithm::Sha512 => hex::encode(sha512_hasher.finalize()),
         };
-        computed == expect_val
+        hashes_match(&computed, expected)
     } else {
         true
     };
@@ -347,7 +348,6 @@ async fn try_download_from_url(
     Ok((final_url, hash_ok))
 }
 
-/// Parse content disposition header
 fn parse_content_disposition(header: &str) -> Option<String> {
     header
         .split(';')
@@ -360,7 +360,6 @@ fn parse_content_disposition(header: &str) -> Option<String> {
         })
 }
 
-/// Extract filename from URL
 fn extract_filename_from_url(url_str: &str) -> Option<String> {
     let url = Url::parse(url_str).ok()?;
     let last_seg = url.path_segments()?.next_back()?;
@@ -372,7 +371,6 @@ fn extract_filename_from_url(url_str: &str) -> Option<String> {
     }
 }
 
-/// Get project ID from URL
 fn get_project_id_from_url(url: &str) -> String {
     let parts: Vec<&str> = url.split('/').collect();
     parts
@@ -383,7 +381,6 @@ fn get_project_id_from_url(url: &str) -> String {
         .unwrap_or_else(|| "0".to_string())
 }
 
-/// Get file ID from URL
 fn get_file_id_from_url(url: &str) -> String {
     let parts: Vec<&str> = url.split('/').collect();
     parts
@@ -394,11 +391,11 @@ fn get_file_id_from_url(url: &str) -> String {
         .unwrap_or_else(|| "0".to_string())
 }
 
-/// Verify file hash
-async fn verify_hash(path: &Path, expected_hash: &str, algo: &str) -> Result<bool> {
-    if expected_hash.is_empty() || algo == "none" {
+async fn verify_hash(path: &Path, expected_hash: Option<(HashAlgorithm, &str)>) -> Result<bool> {
+    let Some((algorithm, expected_hash)) = expected_hash else {
         return Ok(true);
-    }
+    };
+
     let mut file = File::open(path).await?;
     let mut hasher_sha512 = Sha512::new();
     let mut hasher_sha1 = sha1::Sha1::new();
@@ -409,22 +406,19 @@ async fn verify_hash(path: &Path, expected_hash: &str, algo: &str) -> Result<boo
         if n == 0 {
             break;
         }
-        if algo == "sha512" {
-            hasher_sha512.update(&buf[..n]);
-        } else if algo == "sha1" {
-            hasher_sha1.update(&buf[..n]);
+        match algorithm {
+            HashAlgorithm::Sha512 => hasher_sha512.update(&buf[..n]),
+            HashAlgorithm::Sha1 => hasher_sha1.update(&buf[..n]),
         }
     }
 
-    let computed = if algo == "sha512" {
-        hex::encode(hasher_sha512.finalize())
-    } else {
-        hex::encode(hasher_sha1.finalize())
+    let computed = match algorithm {
+        HashAlgorithm::Sha512 => hex::encode(hasher_sha512.finalize()),
+        HashAlgorithm::Sha1 => hex::encode(hasher_sha1.finalize()),
     };
-    Ok(computed == expected_hash)
+    Ok(hashes_match(&computed, expected_hash))
 }
 
-/// Rename file with metadata
 async fn rename_with_metadata(mod_name: &str, temp_path: &Path, final_path: &Path) -> Result<()> {
     if let Ok(meta) = ModMetadata::extract_from_jar(temp_path) {
         let final_name = format!(
@@ -439,4 +433,42 @@ async fn rename_with_metadata(mod_name: &str, temp_path: &Path, final_path: &Pat
         fs::rename(temp_path, &target).await?;
     }
     Ok(())
+}
+
+fn hashes_match(computed: &str, expected: &str) -> bool {
+    computed.eq_ignore_ascii_case(expected)
+}
+
+fn parse_hash_algorithm(algo: &str) -> Result<Option<HashAlgorithm>> {
+    match algo.to_ascii_lowercase().as_str() {
+        "" | "none" => Ok(None),
+        "sha1" => Ok(Some(HashAlgorithm::Sha1)),
+        "sha512" => Ok(Some(HashAlgorithm::Sha512)),
+        _ => anyhow::bail!("Unsupported hash algorithm: {}", algo),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{HashAlgorithm, hashes_match, parse_hash_algorithm};
+
+    #[test]
+    fn compares_hashes_case_insensitively() {
+        assert!(hashes_match("deadbeef", "DEADBEEF"));
+        assert!(!hashes_match("deadbeef", "deadbeee"));
+    }
+
+    #[test]
+    fn parses_hash_algorithm_case_insensitively() {
+        assert_eq!(
+            parse_hash_algorithm("SHA1").unwrap(),
+            Some(HashAlgorithm::Sha1)
+        );
+        assert_eq!(
+            parse_hash_algorithm("sha512").unwrap(),
+            Some(HashAlgorithm::Sha512)
+        );
+        assert_eq!(parse_hash_algorithm("none").unwrap(), None);
+        assert!(parse_hash_algorithm("md5").is_err());
+    }
 }

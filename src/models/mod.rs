@@ -83,7 +83,6 @@ struct ModsTomlMod {
 }
 
 impl ModMetadata {
-    /// Extract metadata from jar file
     pub fn extract_from_jar(jar_path: &std::path::Path) -> anyhow::Result<Self> {
         use std::fs::File;
         use zip::ZipArchive;
@@ -106,7 +105,6 @@ impl ModMetadata {
         Ok(metadata)
     }
 
-    /// Try to read mcmod.info
     fn try_read_mcmod_info(archive: &mut zip::ZipArchive<std::fs::File>) -> anyhow::Result<Self> {
         let mut entry = archive.by_name("mcmod.info")?;
         let mut content = String::new();
@@ -135,7 +133,6 @@ impl ModMetadata {
         }
     }
 
-    /// Try to read fabric.mod.json
     fn try_read_fabric_mod_json(
         archive: &mut zip::ZipArchive<std::fs::File>,
     ) -> anyhow::Result<Self> {
@@ -152,7 +149,6 @@ impl ModMetadata {
         })
     }
 
-    /// Try to read mods.toml
     fn try_read_mods_toml(archive: &mut zip::ZipArchive<std::fs::File>) -> anyhow::Result<Self> {
         let mut entry = archive.by_name("META-INF/mods.toml")?;
         let mut content = String::new();
@@ -171,7 +167,6 @@ impl ModMetadata {
         }
     }
 
-    /// Get display name with fallback
     pub fn get_display_name(&self, fallback: &str) -> String {
         self.name
             .as_ref()
@@ -180,7 +175,6 @@ impl ModMetadata {
             .unwrap_or_else(|| sanitize_filename(fallback))
     }
 
-    /// Get version string
     pub fn get_version(&self) -> String {
         self.version
             .as_ref()

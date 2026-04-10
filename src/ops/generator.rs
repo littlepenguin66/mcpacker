@@ -7,7 +7,6 @@ use zip::ZipArchive;
 
 use crate::ui::print_step;
 
-/// Generate server files
 pub async fn generate_server_files(
     context: &ServerContext,
     pack_path: &Path,
@@ -36,7 +35,6 @@ pub async fn generate_server_files(
     Ok(script_name)
 }
 
-/// Extract overrides from pack
 async fn extract_overrides(pack_path: &Path, output_dir: &Path) -> Result<()> {
     let pack_path = pack_path.to_path_buf();
     let output_dir = output_dir.to_path_buf();
@@ -78,7 +76,6 @@ async fn extract_overrides(pack_path: &Path, output_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Generate start scripts
 async fn generate_start_scripts(
     context: &ServerContext,
     output_dir: &Path,

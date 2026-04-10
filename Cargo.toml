@@ -1,8 +1,8 @@
 [package]
 name = "mcpacker"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
-authors = ["Jerry Zheng <littlepenguinzq@gmail.com>"]
+authors = ["ltpenguin <littlepenguinzq@gmail.com>"]
 description = "A command-line tool to convert client modpacks into ready-to-run Minecraft servers"
 repository = "https://github.com/littlepenguin66/mcpacker"
 license = "AGPL-3.0-or-later"

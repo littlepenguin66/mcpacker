@@ -4,12 +4,12 @@ use anyhow::{Context, Result, bail};
 use futures::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
 use reqwest::Client;
-use sha2::{Digest, Sha256};
+use sha1::Sha1;
+use sha2::{Digest, Sha256, Sha512};
 use std::path::Path;
 use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-/// Install server loader
 pub async fn install_loader(
     context: &ServerContext,
     output_dir: &Path,
@@ -53,13 +53,12 @@ pub async fn install_loader(
     }
 }
 
-/// Download file with progress
 async fn download_file_with_progress(
     client: &Client,
     url: &str,
     output_path: &Path,
     label: &str,
-    expected_sha256: Option<&str>,
+    expected_hash: Option<&str>,
     skip_verify: bool,
     is_installer: bool,
 ) -> Result<()> {
@@ -93,29 +92,27 @@ async fn download_file_with_progress(
     pb.finish_with_message(format!("{} download complete", label));
 
     if is_installer {
-        let computed_sha256 = compute_sha256(output_path).await?;
-        match expected_sha256 {
+        let algorithm = select_hash_algorithm(expected_hash, skip_verify)?;
+        let computed_hash = compute_hash(output_path, algorithm).await?;
+        match expected_hash {
             Some(expected) if skip_verify => {
                 print_warn("Installer hash verification skipped by flag.");
                 println!(
-                    "   Installer SHA-256 (computed): {}",
-                    style(&computed_sha256).cyan()
+                    "   Installer hash (computed): {}",
+                    style(&computed_hash).cyan()
                 );
-                println!(
-                    "   Installer SHA-256 (expected): {}",
-                    style(expected).cyan()
-                );
+                println!("   Installer hash (expected): {}", style(expected).cyan());
             }
             Some(expected) => {
-                println!("   Verifying installer SHA-256: {}", style(expected).cyan());
-                verify_sha256(&computed_sha256, expected)?;
+                println!("   Verifying installer hash: {}", style(expected).cyan());
+                verify_installer_hash(&computed_hash, expected)?;
                 print_success("Installer hash verified.");
             }
             None => {
                 print_warn("Installer hash not provided; skipping verification.");
                 println!(
                     "   Installer SHA-256 (computed): {}",
-                    style(&computed_sha256).cyan()
+                    style(&computed_hash).cyan()
                 );
             }
         }
@@ -124,7 +121,6 @@ async fn download_file_with_progress(
     Ok(())
 }
 
-/// Install Fabric or Quilt loader
 async fn install_fabric_like(
     client: &Client,
     context: &ServerContext,
@@ -159,7 +155,6 @@ async fn install_fabric_like(
     Ok("server.jar".to_string())
 }
 
-/// Install Forge or NeoForge loader
 async fn install_forge_like(
     client: &Client,
     context: &ServerContext,
@@ -263,10 +258,18 @@ async fn install_forge_like(
     Ok(installer_name.to_string())
 }
 
-/// Compute SHA-256 hash
-async fn compute_sha256(path: &Path) -> Result<String> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HashAlgorithm {
+    Sha1,
+    Sha256,
+    Sha512,
+}
+
+async fn compute_hash(path: &Path, algorithm: HashAlgorithm) -> Result<String> {
     let mut file = File::open(path).await?;
-    let mut hasher = Sha256::new();
+    let mut sha1 = Sha1::new();
+    let mut sha256 = Sha256::new();
+    let mut sha512 = Sha512::new();
     let mut buf = [0u8; 8192];
 
     loop {
@@ -274,15 +277,46 @@ async fn compute_sha256(path: &Path) -> Result<String> {
         if n == 0 {
             break;
         }
-        hasher.update(&buf[..n]);
+        match algorithm {
+            HashAlgorithm::Sha1 => sha1.update(&buf[..n]),
+            HashAlgorithm::Sha256 => sha256.update(&buf[..n]),
+            HashAlgorithm::Sha512 => sha512.update(&buf[..n]),
+        }
     }
 
-    Ok(hex::encode(hasher.finalize()))
+    Ok(match algorithm {
+        HashAlgorithm::Sha1 => hex::encode(sha1.finalize()),
+        HashAlgorithm::Sha256 => hex::encode(sha256.finalize()),
+        HashAlgorithm::Sha512 => hex::encode(sha512.finalize()),
+    })
 }
 
-/// Verify SHA-256 hash
-fn verify_sha256(computed_hex: &str, expected_hex: &str) -> Result<()> {
-    if computed_hex.to_lowercase() != expected_hex.to_lowercase() {
+fn detect_hash_algorithm(expected_hash: Option<&str>) -> Result<HashAlgorithm> {
+    match expected_hash.map(str::len) {
+        Some(40) => Ok(HashAlgorithm::Sha1),
+        Some(64) | None => Ok(HashAlgorithm::Sha256),
+        Some(128) => Ok(HashAlgorithm::Sha512),
+        Some(length) => bail!(
+            "Unsupported installer hash length {}. Expected SHA-1 (40), SHA-256 (64), or SHA-512 (128) hex characters",
+            length
+        ),
+    }
+}
+
+fn select_hash_algorithm(expected_hash: Option<&str>, skip_verify: bool) -> Result<HashAlgorithm> {
+    if skip_verify {
+        return Ok(match expected_hash.map(str::len) {
+            Some(40) => HashAlgorithm::Sha1,
+            Some(128) => HashAlgorithm::Sha512,
+            _ => HashAlgorithm::Sha256,
+        });
+    }
+
+    detect_hash_algorithm(expected_hash)
+}
+
+fn verify_installer_hash(computed_hex: &str, expected_hex: &str) -> Result<()> {
+    if !computed_hex.eq_ignore_ascii_case(expected_hex) {
         bail!(
             "Installer hash mismatch: expected {}, got {}",
             expected_hex,
@@ -290,4 +324,46 @@ fn verify_sha256(computed_hex: &str, expected_hex: &str) -> Result<()> {
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        HashAlgorithm, detect_hash_algorithm, select_hash_algorithm, verify_installer_hash,
+    };
+
+    #[test]
+    fn detects_supported_installer_hash_lengths() {
+        assert_eq!(
+            detect_hash_algorithm(Some(&"a".repeat(40))).unwrap(),
+            HashAlgorithm::Sha1
+        );
+        assert_eq!(
+            detect_hash_algorithm(Some(&"b".repeat(64))).unwrap(),
+            HashAlgorithm::Sha256
+        );
+        assert_eq!(
+            detect_hash_algorithm(Some(&"c".repeat(128))).unwrap(),
+            HashAlgorithm::Sha512
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_installer_hash_lengths() {
+        assert!(detect_hash_algorithm(Some("abc")).is_err());
+    }
+
+    #[test]
+    fn compares_installer_hashes_case_insensitively() {
+        assert!(verify_installer_hash("deadbeef", "DEADBEEF").is_ok());
+        assert!(verify_installer_hash("deadbeef", "DEADBEEE").is_err());
+    }
+
+    #[test]
+    fn skip_verify_falls_back_without_rejecting_unknown_hash_length() {
+        assert_eq!(
+            select_hash_algorithm(Some("abc"), true).unwrap(),
+            HashAlgorithm::Sha256
+        );
+    }
 }
