@@ -1,79 +1,23 @@
+# Repository Guidelines
 
-# PROJECT KNOWLEDGE BASE
-**Generated:** 2026-01-21T07:14:25Z  
-**Branch:** (not captured)  
-**Commit:** (not captured)  
+## Project Structure & Module Organization
+`mcpacker` is a single Rust binary crate. `src/main.rs` owns CLI parsing and the top-level conversion flow. Keep core logic in focused modules: `src/ops/` handles downloading, installer execution, and script generation; `src/parsers/` handles Modrinth, CurseForge, and client-only filtering; `src/models/` defines shared types; `src/ui/` owns terminal output. Release notes live in `docs/releases/`. README changes should usually be mirrored in `README-zh.md`.
 
-## OVERVIEW
-Rust CLI that parses Modrinth (`.mrpack`) and CurseForge (`.zip`) packs, downloads server mods with hash checks, installs loader, and emits start scripts.
+## Build, Test, and Development Commands
+Use Cargo for all local work:
 
-## STRUCTURE
-```mcpacker/AGENTS.md#L10-22
-./
-├── src/
-│   ├── main.rs         # CLI args, orchestration
-│   ├── ops/            # download/install/generate pipeline
-│   ├── parsers/        # modpack parsing + client-only cache
-│   ├── models/         # shared types, jar metadata
-│   ├── ui/             # console styling helpers
-│   └── utils.rs        # filename sanitization
-├── modpacks/           # sample inputs
-├── Cargo.toml          # deps, release profile
-└── Cargo.lock
-```
+- `cargo run -- <pack.mrpack>` runs the CLI against a local modpack.
+- `cargo build --release` builds the optimized binary.
+- `cargo test` runs the inline unit tests.
+- `cargo fmt` applies standard Rust formatting.
+- `cargo clippy --all-targets --all-features` catches lint issues before review.
+- `cargo install --path .` installs the current checkout locally.
 
-## WHERE TO LOOK
-| Task | Location | Notes |
-|------|----------|-------|
-| CLI surface & flow | `src/main.rs` | Clap config; parse → download → install → generate |
-| Download pipeline | `src/ops/downloader.rs` | Parallel fetch, content-disposition rename, hash verify, backoff |
-| Loader install | `src/ops/installer.rs` | Fetch/verify server jar; respects proxy + hash flags |
-| Server files | `src/ops/generator.rs` | Emits start scripts using memory/java args; sets EULA flag |
-| Modpack parsing | `src/parsers/{modrinth,curseforge}.rs` | Builds `ServerContext` + `Vec<ModInfo>`; extension-gated |
-| Client-only filter cache | `src/parsers/filter.rs` | Fetches keyword list to OS cache (directories crate); proxy aware |
-| Jar metadata extraction | `src/models/mod.rs` | Reads `fabric.mod.json` / `mods.toml` / `mcmod.info` |
-| UX output helpers | `src/ui/mod.rs` | `print_step/info/success/warn`, logo, emojis |
+## Coding Style & Naming Conventions
+This crate uses Rust 2024 and standard `rustfmt` defaults (4-space indentation). Follow existing naming: modules and functions in `snake_case`, types and enums in `PascalCase`, constants in `SCREAMING_SNAKE_CASE`. Prefer small, composable functions and explicit types over clever shortcuts. Avoid comments; if code needs explanation, rename or split it until the intent is obvious.
 
-## CODE MAP (KEY SYMBOLS)
-| Symbol | Kind | Location | Role |
-|--------|------|----------|------|
-| `Args` | struct | `src/main.rs` | CLI flags: input/output/memory/java/proxy/hash/install toggles |
-| `main` | async fn | `src/main.rs` | Drives parse → download → install → generate; updates cache when requested |
-| `download_all` | async fn | `src/ops/downloader.rs` | Streams downloads with progress bars; optional hash skip |
-| `install_loader` | async fn | `src/ops/installer.rs` | Installs loader jar with optional expected hash |
-| `generate_server_files` | async fn | `src/ops/generator.rs` | Writes start scripts/config; applies memory/java path; accepts EULA toggle |
-| `parse_modrinth` / `parse_curseforge` | fns | `src/parsers/*.rs` | Return `ServerContext` + mod list per format |
-| `ModMetadata::extract_from_jar` | fn | `src/models/mod.rs` | Derives name/version/id from jar internals |
-| `sanitize_filename` | fn | `src/utils.rs` | Normalizes filenames before writes/renames |
+## Testing Guidelines
+Tests are colocated with the code they cover under `#[cfg(test)]`, not in a separate `tests/` tree. Add or update nearby unit tests for every parser, validation, hashing, or installer behavior change. Name tests as behavior statements such as `rejects_zero_parallel_downloads`. There is no numeric coverage gate today, but changed paths should keep `cargo test` green.
 
-## CONVENTIONS (PROJECT-SPECIFIC)
-- Inputs: `.mrpack` → Modrinth; `.zip` → CurseForge; otherwise bail.
-- Memory flag must start with digit and end with `M`/`G` (case-insensitive).
-- Proxy string passed directly to HTTP client; invalid proxy should fail fast with context.
-- Hash verification supports `sha1`/`sha512`; `--skip_hash` disables mod hash checks.
-- Resource packs (`.zip` after resolution) are skipped from mods download.
-- Progress output via indicatif; keep concise, no noisy logs.
-- Cache for client-only keywords lives in OS cache dir via `ProjectDirs`.
-
-## ANTI-PATTERNS (FORBIDDEN)
-- Hardcoding cache paths; always use `ProjectDirs`.
-- Silently skipping hashes without explicit `--skip_hash`.
-- Accepting installer without verifying when `--installer_hash` is provided.
-- Duplicating parent guidance in future subdirectory AGENTS (none needed given current size).
-
-## UNIQUE STYLES
-- All user-facing text styled through `console` helpers (`print_step/info/success/warn`); avoid raw `println!` for status.
-- Downloader uses incremental backoff per alternate URL and multi-progress bars; preserve UX cues.
-- Filenames sanitized aggressively before writes/renames to avoid platform issues.
-
-## COMMANDS
-```mcpacker/AGENTS.md#L69-72
-cargo run --release -- <pack.zip|pack.mrpack> [--output PATH] [--memory 4G] [--parallel 10] [--proxy URL] [--skip_hash] [--skip_installer_verify] [--installer_hash HEX]
-cargo run --release -- --update_list [--proxy URL]   # refresh client-only cache; exits if no input
-```
-
-## NOTES / GOTCHAS
-- If `--update_list` is set and no input provided, process exits after cache refresh.
-- When `--skip_installer_verify` is set, emit warning; otherwise verify installer if hash supplied.
-- Loader type/version from parsers drives installer/generator; maintain alignment when adding formats.
-- No subdirectory AGENTS warranted (20 files, depth 3). Keep this file authoritative and lean.
+## Commit & Pull Request Guidelines
+Recent history mixes styles, but contributors should use one-line conventional commits such as `fix(cli): reject zero parallel downloads` or `chore(release): bump version to 26.4.10`. Keep PRs small and focused. Include a short description, linked issue when available, exact verification commands run, and sample terminal output when CLI behavior changes. Update `README.md`, `README-zh.md`, and `docs/releases/` together when flags, output, or versioned behavior changes.
