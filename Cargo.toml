@@ -15,7 +15,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0.100"
-chrono = { version = "0.4.43", default-features = false, features = ["clock", "std"] }
+chrono = { version = "0.4.44", default-features = false, features = ["clock", "std"] }
 clap = { version = "4.5.54", default-features = false, features = ["derive", "std", "help", "usage", "error-context", "suggestions"] }
 console = "0.16.2"
 dialoguer = "0.12.0"
