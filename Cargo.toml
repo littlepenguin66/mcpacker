@@ -14,7 +14,7 @@ name = "mcpacker"
 path = "src/main.rs"
 
 [dependencies]
-anyhow = "1.0.100"
+anyhow = "1.0.102"
 chrono = { version = "0.4.43", default-features = false, features = ["clock", "std"] }
 clap = { version = "4.5.54", default-features = false, features = ["derive", "std", "help", "usage", "error-context", "suggestions"] }
 console = "0.16.2"
